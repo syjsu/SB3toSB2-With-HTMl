@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Scratch File Backup</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/2.5.0/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2014-11-29/FileSaver.min.js"></script>
+    <script src="https://cdn.rawgit.com/Stuk/jszip-utils/dfdd631c4249bc495d0c335727ee547702812aa5/dist/jszip-utils.min.js"></script>
+</head>
+
+<body>
+    <style type="text/css">
+    body {
+        background: black;
+        color: white;
+        font-family: 'Audiowide';
+    }
+    div#container {
+        text-align: center;
+        border-radius: 1em;
+        position: relative;
+    }
+    div#progress {
+        background: rgba(0, 0, 255, 0.5);
+        position: absolute;
+        top: 0px;
+        left: 0px;
+        width: 0%;
+        height: 100%;
+        z-index: 0;
+        border-radius: 1em;
+    }
+    div#progress.error {
+        background: rgba(255, 0, 0, 0.5);
+    }
+    h3 {
+        text-align: center;
+    }
+    div#progress.success {
+        background: rgba(0, 255, 0, 0.5);
+    }
+    input#project {
+        font-family: 'Audiowide';
+        margin-right: 0;
+        padding-right: 0;
+        width: 500px;
+        background: rgba(100, 100, 100, 0.5);
+        color: white;
+        border: 2px solid rgba(100, 100, 100, 0.5);
+        padding-left: 1em;
+        transition: all 0.2s;
+        border-top-left-radius: 1em;
+        border-bottom-left-radius: 1em;
+    }
+    input#project:focus {
+        background: rgba(150, 150, 150, 0.5);
+    }
+    button {
+        font-family: 'Audiowide';
+        background: rgba(100, 100, 100, 0.5);
+        color: white;
+        border: 2px solid rgba(100, 100, 100, 0.5);
+        border-left: 1px solid white;
+        transition: all 0.5s;
+    }
+    button:hover:not(:disabled) {
+        background: rgba(100, 100, 150, 0.5);
+    }
+    button:active {
+        text-shadow: 0px 0px 5px white;
+    }
+    button#go {
+        border-top-right-radius: 1em;
+        border-bottom-right-radius: 1em;
+    }
+    button#go,
+    input#project {
+        box-shadow: 0px 0px 5px blue;
+        outline: 0;
+    }
+    #bar {
+        position: relative;
+    }
+    pre {
+        border-top: 1px solid white;
+    }
+    </style>
+
+    <script type="text/javascript">
+    $(document).ready(function() {
+        $("#project").bind("keydown keyup keypress", function() {
+            $(this).css("color", "white");
+            var projectId = $("#project").val();
+            projectId = projectId.replace("://scratch.mit.edu/projects/", "").replace("https", "").replace("http", "");
+            projectId = parseInt(projectId);
+            if (isNaN(projectId)) {
+                $("#project").css("color", "red");
+            }
+        }).on("paste", function() {
+            $(this).val("");
+        });
+        $("#go").click(function() {
+            $("#progress").removeClass("error success");
+            var projectId = $("#project").val();
+            projectId = projectId.replace("://scratch.mit.edu/projects/", "").replace("https", "").replace("http", "");
+            projectId = parseInt(projectId);
+            if (isNaN(projectId)) {
+                $("#project").css("color", "red");
+                return;
+            }
+            $("#go, #project").attr("disabled", "disabled");
+            startDownload(projectId);
+        });
+    });
+
+    var maxWidth = 0;
+    var jszip = null;
+    var project = null;
+    var id = null;
+    var soundId = 0;
+    var costumeId = 0;
+    var soundsToDownload = [];
+    var costumesToDownload = [];
+    var totalAssets = 0;
+    var completeAssets = 0;
+
+    function startDownload(projectId) {
+        $("#log").text("");
+        $("#progress").text("");
+        logMessage("Downloading project: " + projectId);
+        soundId = 0;
+        costumeId = 0;
+        totalAssets = 0;
+        completeAssets = 0;
+        soundsToDownload = [];
+        costumesToDownload = [];
+        id = projectId;
+        setProgress(0);
+        jszip = new JSZip();
+        jszip.comment = "Created with MegaApuTurkUltra's Project Downloader";
+        $.get("https://cdn.projects.scratch.mit.edu/internalapi/project/" + projectId + "/get/", function(data) {
+            // FIX 2018-07-16
+            if (typeof data == "string") {
+                data = JSON.parse(data);
+            }
+            setProgress(10);
+            logMessage("Loaded JSON");
+            project = data;
+            processSoundsAndCostumes(project);
+            if (project.hasOwnProperty("children")) {
+                for (child in project.children) {
+                    processSoundsAndCostumes(project.children[child]);
+                }
+            }
+            logMessage("Found " + totalAssets + " assets");
+            jszip.file("project.json", JSON.stringify(project));
+            downloadCostume();
+        }).fail(perror);
+    }
+
+    function downloadCostume() {
+        if (costumesToDownload.length > 0) {
+            var current = costumesToDownload.pop();
+            logMessage("Loading asset " + current.costumeName + " (" + completeAssets + "/" + totalAssets + ")");
+            JSZipUtils.getBinaryContent(
+                "https://cdn.assets.scratch.mit.edu/internalapi/asset/" + current.baseLayerMD5 + "/get/",
+                function(err, data) {
+                    if (err) {
+                        error();
+                        return;
+                    }
+                    var ext = current.baseLayerMD5.match(/\.[a-zA-Z0-9]+/)[0];
+                    jszip.file(current.baseLayerID + ext, data, {
+                        binary: true
+                    });
+                    completeAssets++;
+                    setProgress(10 + 89 * (completeAssets / totalAssets));
+                    downloadCostume();
+                });
+        } else {
+            downloadSound();
+        }
+    }
+
+    function downloadSound() {
+        if (soundsToDownload.length > 0) {
+            var current = soundsToDownload.pop();
+            logMessage("Loading asset " + current.soundName + " (" + completeAssets + "/" + totalAssets + ")");
+            JSZipUtils.getBinaryContent(
+                "https://cdn.assets.scratch.mit.edu/internalapi/asset/" + current.md5 + "/get/",
+                function(err, data) {
+                    if (err) {
+                        error();
+                        return;
+                    }
+                    var ext = current.md5.match(/\.[a-zA-Z0-9]+/)[0];
+                    jszip.file(current.soundID + ext, data, {
+                        binary: true
+                    });
+                    completeAssets++;
+                    setProgress(10 + 89 * (completeAssets / totalAssets));
+                    downloadSound();
+                });
+        } else {
+            logMessage("Loading project title...");
+            $.get("https://scratch.mit.edu/api/v1/project/" + id + "/?format=json", function(data) {
+                logMessage("Generating ZIP...");
+                var content = jszip.generate({
+                    type: "blob"
+                });
+                logMessage("Saving...");
+                try {
+                    saveAs(content, data.title + ".sb2");
+                } catch (e) {
+                    saveAs(content, "project.sb2");
+                }
+                logMessage("Complete");
+                psuccess();
+            }).fail(function() {
+                logMessage("Failed to load project title");
+                logMessage("Generating ZIP...");
+                var content = jszip.generate({
+                    type: "blob"
+                });
+                logMessage("Saving...");
+                saveAs(content, "project.sb2");
+                logMessage("Complete");
+                psuccess();
+            });
+        }
+    }
+
+    function processSoundsAndCostumes(node) {
+        if (node.hasOwnProperty("costumes")) {
+            for (var i = 0; i < node.costumes.length; i++) {
+                var current = node.costumes[i];
+                current.baseLayerID = costumeId;
+                costumeId++;
+                totalAssets++;
+                costumesToDownload.push(current);
+            }
+        }
+        if (node.hasOwnProperty("sounds")) {
+            for (var i = 0; i < node.sounds.length; i++) {
+                var current = node.sounds[i];
+                current.soundID = soundId;
+                soundId++;
+                totalAssets++;
+                soundsToDownload.push(current);
+            }
+        }
+    }
+
+    function perror() {
+        logMessage("Download error");
+        setProgress(100);
+        $("#progress").addClass("error");
+        $("#progress").animate({
+            opacity: 0
+        }, 1000, function() {
+            $(this).css({
+                "opacity": 1,
+                width: 0
+            });
+            reset();
+        });
+    }
+
+    function psuccess() {
+        setProgress(100);
+        $("#progress").addClass("success");
+        $("#progress").animate({
+            opacity: 0
+        }, 1000, function() {
+            $(this).css({
+                "opacity": 1,
+                width: 0
+            });
+            reset();
+        });
+    }
+
+    function setProgress(perc) {
+        maxWidth = $("#project").width() + $("#go").width();
+        $("#progress").css("left", $("#project").position().left + "px");
+        $("#progress").width(perc * maxWidth * 1.055 / 100);
+    }
+
+    function reset() {
+        $("#go, #project").removeAttr("disabled");
+    }
+
+    function logMessage(msg) {
+        $("#log").text(msg + "\n" + $("#log").text());
+    }
+    </script>
+
+    <h3>Scratch Project File Save</h3>
+    <div id="container">
+        <div id="progress"></div>
+        <input type="text" id="project" value="http://scratch.mit.edu/projects/" placeholder="Project URL" autofocus />
+        <button id="go">Download!</button>
+    </div>
+    <pre><code id="log"></code></pre>
+
+
+</body>
+
+</html>
